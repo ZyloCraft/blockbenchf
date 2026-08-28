@@ -18,7 +18,7 @@ async function capacitorSaveFile(content: any, file_name: string): Promise<boole
 			data = content;
 			encoding = Encoding.UTF8;
 		}
-		await Filesystem.writeFile({ path: file_name, data, directory: Directory.Documents, encoding, recursive: true });
+		await Filesystem.writeFile({ path: file_name, data, directory: Directory.Data, encoding, recursive: true });
 		return true;
 	} catch (e) {
 		console.error('Capacitor save failed', e);
