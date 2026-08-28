@@ -14,6 +14,7 @@ jobs:
           node-version: 20
 
       - run: npm install
+      - run: npm install @capacitor/core @capacitor/filesystem
       - run: npm run build-web
 
       - name: Prepare web folder
@@ -22,10 +23,14 @@ jobs:
           cp index.html manifest.webmanifest favicon.png icon.png icon_full.png icon_maskable.png www/
           cp -r css assets font lib lang content dist www/
 
-      - run: npm install @capacitor/core @capacitor/android @capacitor/cli
+      - run: npm install @capacitor/android @capacitor/cli
       - run: npx cap init "Blockbench" "com.zyr7.blockbench" --web-dir=www
       - run: npx cap add android
       - run: npx cap sync android
+
+      - name: Add storage permissions
+        run: |
+          sed -i "s#</manifest>#    <uses-permission android:name=\"android.permission.READ_EXTERNAL_STORAGE\" android:maxSdkVersion=\"32\" />\n    <uses-permission android:name=\"android.permission.WRITE_EXTERNAL_STORAGE\" android:maxSdkVersion=\"32\" />\n</manifest>#" android/app/src/main/AndroidManifest.xml
 
       - name: Fix Kotlin stdlib duplicate classes
         run: |
