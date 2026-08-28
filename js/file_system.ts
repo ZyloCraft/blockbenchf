@@ -1,4 +1,41 @@
 import saveAs from 'file-saver'
+
+async function capacitorSaveFile(content: any, file_name: string): Promise<boolean> {
+	try {
+		const { Filesystem, Directory, Encoding } = await import('@capacitor/filesystem');
+		let data: string;
+		let encoding: any;
+		if (content instanceof Blob) {
+			data = await new Promise<string>((resolve, reject) => {
+				let reader = new FileReader();
+				reader.onload = () => resolve((reader.result as string).split(',')[1]);
+				reader.onerror = reject;
+				reader.readAsDataURL(content);
+			});
+		} else if (typeof content === 'string' && content.startsWith('data:')) {
+			data = content.split(',')[1];
+		} else {
+			data = content;
+			encoding = Encoding.UTF8;
+		}
+		await Filesystem.writeFile({ path: file_name, data, directory: Directory.Documents, encoding, recursive: true });
+		return true;
+	} catch (e) {
+		console.error('Capacitor save failed', e);
+		return false;
+	}
+}
+function blockbenchSaveAs(content: any, file_name: string, options: any = {}) {
+	// @ts-ignore
+	if (window.Capacitor && window.Capacitor.isNativePlatform && window.Capacitor.isNativePlatform()) {
+		capacitorSaveFile(content, file_name).then(ok => {
+			if (ok) Blockbench.showQuickMessage(`Saved ${file_name} to Documents`, 2000);
+			else saveAs(content, file_name, options);
+		});
+	} else {
+		saveAs(content, file_name, options);
+	}
+}
 import StateMemory from './util/state_memory'
 import { pathToExtension } from './util/util';
 import { app, currentwindow, electron, fs, ipcRenderer, webUtils } from './native_apis';
@@ -371,13 +408,13 @@ export namespace Filesystem {
 				let savetype = typeof options.savetype == 'function' ? options.savetype(file_name) : options.savetype;
 
 				if (savetype === 'image' && typeof options.content == 'string') {
-					saveAs(options.content, file_name, {})
+					blockbenchSaveAs(options.content, file_name, {})
 
 				} else if (['zip', 'buffer', 'binary', 'image'].includes(savetype)) {
 					let blob = options.content instanceof Blob
 							 ? options.content
 							 : new Blob([options.content], {type: "octet/stream"});
-					saveAs(blob, file_name)
+					blockbenchSaveAs(blob, file_name)
 
 				} else {
 					let type = 'text/plain;charset=utf-8';
@@ -387,7 +424,7 @@ export namespace Filesystem {
 						type = 'model/vnd.blockbench.bbmodel';
 					}
 					let blob = new Blob([options.content], {type});
-					saveAs(blob, file_name, {autoBOM: true})
+					blockbenchSaveAs(blob, file_name, {autoBOM: true})
 				}
 
 			}
