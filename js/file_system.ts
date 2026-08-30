@@ -1,10 +1,14 @@
 import saveAs from 'file-saver'
+import { registerPlugin } from '@capacitor/core'
+
+interface SaveFilePluginInterface {
+	saveFile(options: { fileName: string; data: string; mimeType: string }): Promise<{ uri: string }>;
+}
+const SaveFilePlugin = registerPlugin<SaveFilePluginInterface>('SaveFilePlugin');
 
 async function capacitorSaveFile(content: any, file_name: string): Promise<boolean> {
 	try {
-		const { Filesystem, Directory, Encoding } = await import('@capacitor/filesystem');
 		let data: string;
-		let encoding: any;
 		if (content instanceof Blob) {
 			data = await new Promise<string>((resolve, reject) => {
 				let reader = new FileReader();
@@ -15,10 +19,15 @@ async function capacitorSaveFile(content: any, file_name: string): Promise<boole
 		} else if (typeof content === 'string' && content.startsWith('data:')) {
 			data = content.split(',')[1];
 		} else {
-			data = content;
-			encoding = Encoding.UTF8;
+			data = btoa(unescape(encodeURIComponent(content)));
 		}
-		await Filesystem.writeFile({ path: file_name, data, directory: Directory.Documents, encoding, recursive: true });
+		let extension = file_name.split('.').pop();
+		let mimeType = 'application/octet-stream';
+		if (extension === 'png') mimeType = 'image/png';
+		else if (extension === 'json' || extension === 'bbmodel') mimeType = 'application/json';
+		else mimeType = 'text/plain';
+
+		await SaveFilePlugin.saveFile({ fileName: file_name, data, mimeType });
 		return true;
 	} catch (e) {
 		console.error('Capacitor save failed', e);
@@ -29,8 +38,7 @@ function blockbenchSaveAs(content: any, file_name: string, options: any = {}) {
 	// @ts-ignore
 	if (window.Capacitor && window.Capacitor.isNativePlatform && window.Capacitor.isNativePlatform()) {
 		capacitorSaveFile(content, file_name).then(ok => {
-			if (ok) Blockbench.showQuickMessage(`Saved ${file_name} to Documents`, 2000);
-			else saveAs(content, file_name, options);
+			if (!ok) saveAs(content, file_name, options);
 		});
 	} else {
 		saveAs(content, file_name, options);
