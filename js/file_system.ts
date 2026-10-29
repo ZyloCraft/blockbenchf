@@ -1,49 +1,4 @@
 import saveAs from 'file-saver'
-import { registerPlugin } from '@capacitor/core'
-
-interface SaveFilePluginInterface {
-	saveFile(options: { fileName: string; data: string; mimeType: string }): Promise<{ uri: string }>;
-}
-const SaveFilePlugin = registerPlugin<SaveFilePluginInterface>('SaveFilePlugin');
-
-async function capacitorSaveFile(content: any, file_name: string): Promise<boolean> {
-	try {
-		let data: string;
-		if (content instanceof Blob) {
-			data = await new Promise<string>((resolve, reject) => {
-				let reader = new FileReader();
-				reader.onload = () => resolve((reader.result as string).split(',')[1]);
-				reader.onerror = reject;
-				reader.readAsDataURL(content);
-			});
-		} else if (typeof content === 'string' && content.startsWith('data:')) {
-			data = content.split(',')[1];
-		} else {
-			data = btoa(unescape(encodeURIComponent(content)));
-		}
-		let extension = file_name.split('.').pop();
-		let mimeType = 'application/octet-stream';
-		if (extension === 'png') mimeType = 'image/png';
-		else if (extension === 'json' || extension === 'bbmodel') mimeType = 'application/json';
-		else mimeType = 'text/plain';
-
-		await SaveFilePlugin.saveFile({ fileName: file_name, data, mimeType });
-		return true;
-	} catch (e) {
-		console.error('Capacitor save failed', e);
-		return false;
-	}
-}
-function blockbenchSaveAs(content: any, file_name: string, options: any = {}) {
-	// @ts-ignore
-	if (window.Capacitor && window.Capacitor.isNativePlatform && window.Capacitor.isNativePlatform()) {
-		capacitorSaveFile(content, file_name).then(ok => {
-			if (!ok) saveAs(content, file_name, options);
-		});
-	} else {
-		saveAs(content, file_name, options);
-	}
-}
 import StateMemory from './util/state_memory'
 import { pathToExtension } from './util/util';
 import { app, currentwindow, electron, fs, ipcRenderer, webUtils } from './native_apis';
@@ -426,13 +381,13 @@ export namespace Filesystem {
 				let savetype = typeof options.savetype == 'function' ? options.savetype(file_name) : options.savetype;
 
 				if (savetype === 'image' && typeof options.content == 'string') {
-					blockbenchSaveAs(options.content, file_name, {})
+					saveAs(options.content, file_name, {})
 
 				} else if (['zip', 'buffer', 'binary', 'image'].includes(savetype)) {
 					let blob = options.content instanceof Blob
 							 ? options.content
 							 : new Blob([options.content], {type: "octet/stream"});
-					blockbenchSaveAs(blob, file_name)
+					saveAs(blob, file_name)
 
 				} else {
 					let type = 'text/plain;charset=utf-8';
@@ -442,7 +397,7 @@ export namespace Filesystem {
 						type = 'model/vnd.blockbench.bbmodel';
 					}
 					let blob = new Blob([options.content], {type});
-					blockbenchSaveAs(blob, file_name, {autoBOM: true})
+					saveAs(blob, file_name, {autoBOM: true})
 				}
 
 			}
