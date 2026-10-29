@@ -147,6 +147,7 @@ GLTFExporter.prototype = {
 		var buffers = [];
 		var pending = [];
 		var nodeMap = new Map();
+		var skeletonMap = new Map();
 		var skins = [];
 		var extensionsUsed = {};
 		var cachedData = {
@@ -932,7 +933,7 @@ GLTFExporter.prototype = {
 					color: 0xffffff,
 					map: original.map,
 					transparent: true,
-					side: Canvas.getRenderSide(),
+					side: original.side,
 					alphaTest: 0.05
 				});
 				cachedMaterials[original.uuid] = material;
@@ -1303,39 +1304,51 @@ GLTFExporter.prototype = {
 					
 					modifiedAttribute = new BufferAttribute( new Float32Array( array ), attribute.itemSize, attribute.normalized );
 
-					modifiedAttribute.array.forEach((v, i) => {
+					const groups = mesh.geometry.groups;
+					const isMultiMaterial = Array.isArray(mesh.material);
 
+					for (let i = 0; i < modifiedAttribute.count; i++) {
+						let u = modifiedAttribute.getX(i);
+						let v = 1 - modifiedAttribute.getY(i);
 						// Blockbench: Undo flip Y
-						if (i%2 == 1) {
-							v = modifiedAttribute.array[i] = 1 - v;
-						}
+						modifiedAttribute.setXY(i, u, v);
 
 						// Blockbench: Modify UV mapping for poweroftwo texture conversion
 						if (options.forcePowerOfTwoTextures && options.embedImages) {
 
 							if (!mesh.geometry) return;
-							let material;
 							
-							if (mesh.material instanceof Array) {
-								let group = mesh.geometry.groups.find(group => Math.floor(i/2) >= group.start && Math.floor(i/2) < (group.start + group.count));
-								if (group) material = mesh.material[group.materialIndex];
-							} else {
-								material = mesh.material;
+							let material = isMultiMaterial ? mesh.material[0] : mesh.material;
+							if (isMultiMaterial && groups.length > 0) {
+								// Find the index pointer position:
+								// If geometry is indexed, 'i is the vertex ID, so we find where 'i' appears in the index buffer
+								// If non-indexed, the pointer position is simply 'i'
+								let elementIndex = i;
+
+								if (mesh.geometry.index) {
+									elementIndex = mesh.geometry.index.array.indexOf(i);
+								}
+
+								if (elementIndex !== -1) {
+									const group = groups.find(g => elementIndex >= g.start && elementIndex < (g.start + g.count));
+									if (group && mesh.material[group.materialIndex]) {
+										material = mesh.material[group.materialIndex];
+									}
+								}
 							}
 
-							if (!material) return;
+							if (!material || material instanceof Array) return;
 							let map = material.map;
 							if (!map && material.uniforms && material.uniforms.t0) map = material.uniforms.t0.value;
 							if (!map && material.uniforms && material.uniforms.map) map = material.uniforms.map.value;
 							if (!map || !map.image) return;
+
 							
-							if (i%2 == 0) {
-								modifiedAttribute.array[i] = v * (map.image.width / THREE.MathUtils.ceilPowerOfTwo(map.image.width));
-							} else {
-								modifiedAttribute.array[i] = v * (map.image.height / THREE.MathUtils.ceilPowerOfTwo(map.image.height));
-							}
+							u *= (map.image.width / THREE.MathUtils.ceilPowerOfTwo(map.image.width));
+							v *= (map.image.height / THREE.MathUtils.ceilPowerOfTwo(map.image.height));
+							modifiedAttribute.setXY(i, u, v);
 						}
-					})
+					}
 				}
 				if ( options.scale_factor && attributeName === 'POSITION' ) {
 					
@@ -1756,43 +1769,51 @@ GLTFExporter.prototype = {
 
 			if ( skeleton === undefined ) return null;
 
-			var rootJoint = object.skeleton.bones[ 0 ];
+			var rootJoint = skeleton.bones[ 0 ];
 
 			if ( rootJoint === undefined ) return null;
 
-			var joints = [];
-			var inverseBindMatrices = new Float32Array( skeleton.bones.length * 16 );
+			let skinJSON = skeletonMap.get(skeleton);
 
-			let v = new Vector3();
+			if (!skinJSON) {
 
-			for ( var i = 0; i < skeleton.bones.length; ++ i ) {
+				var joints = [];
+				var inverseBindMatrices = new Float32Array( skeleton.bones.length * 16 );
 
-				joints.push( nodeMap.get( skeleton.bones[ i ] ) );
+				let v = new Vector3();
 
-				let boneInverse = skeleton.boneInverses[ i ].clone();
-				v.setFromMatrixPosition( boneInverse );
-				v.multiplyScalar( options.scale_factor );
-				boneInverse.setPosition( v );
+				for ( var i = 0; i < skeleton.bones.length; ++ i ) {
 
-				boneInverse.toArray( inverseBindMatrices, i * 16 );
+					joints.push( nodeMap.get( skeleton.bones[ i ] ) );
 
+					let boneInverse = skeleton.boneInverses[ i ].clone();
+					v.setFromMatrixPosition( boneInverse );
+					v.multiplyScalar( options.scale_factor );
+					boneInverse.setPosition( v );
+
+					boneInverse.toArray( inverseBindMatrices, i * 16 );
+
+				}
+
+				if ( outputJSON.skins === undefined ) {
+
+					outputJSON.skins = [];
+
+				}
+
+				skinJSON = {
+
+					inverseBindMatrices: processAccessor( new BufferAttribute( inverseBindMatrices, 16 ) ),
+					joints: joints,
+					skeleton: nodeMap.get( rootJoint )
+
+				};
+				outputJSON.skins.push( skinJSON );
+
+				skeletonMap.set( skeleton, skinJSON );
 			}
 
-			if ( outputJSON.skins === undefined ) {
-
-				outputJSON.skins = [];
-
-			}
-
-			outputJSON.skins.push( {
-
-				inverseBindMatrices: processAccessor( new BufferAttribute( inverseBindMatrices, 16 ) ),
-				joints: joints,
-				skeleton: nodeMap.get( rootJoint )
-
-			} );
-
-			var skinIndex = node.skin = outputJSON.skins.length - 1;
+			var skinIndex = node.skin = outputJSON.skins.indexOf( skinJSON );
 
 			return skinIndex;
 

@@ -119,7 +119,7 @@ export class SplineCurve {
         function interpolate(poses) {
             let v1 = poses[0].slice();
             let v2 = poses[1].slice();
-            return v2.V3_subtract(v1).V3_multiply(time).V3_add(v1);;
+            return v2.V3_subtract(v1).V3_multiply(time).V3_add(v1);
         }
 
         let arr1 = [[vert1, vert2], [vert2, vert3], [vert3, vert4]];
@@ -917,7 +917,7 @@ export class SplineMesh extends OutlinerElement {
     }
     // Taken nearly as-is from Mesh
     resize(val, axis, negative, allow_negative, bidirectional) {
-        let source_vertices = typeof val == 'number' ? this.oldVertices : this.vertices;
+        let source_vertices = typeof val == 'number' ? this.temp_data.oldVertices : this.vertices;
         let selected_vertices = Project.spline_selection[this.uuid]?.vertices || Object.keys(this.vertices);
         let range = [Infinity, -Infinity];
         let { vec1, vec2 } = Reusable;

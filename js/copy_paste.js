@@ -12,7 +12,6 @@ export const Clipbench = {
 		texture: 'texture',
 		layer: 'layer',
 		outliner: 'outliner',
-		texture_selection: 'texture_selection',
 		image: 'image',
 	},
 	type_icons: {
@@ -20,6 +19,7 @@ export const Clipbench = {
 		mesh_selection: 'fa-gem',
 		outliner: 'fas.fa-cube',
 	},
+	duplicate_map: new Map(),
 	getCopyType(mode, check) {
 		// mode: 1 = copy, 2 = paste
 		let p = Prop.active_panel;
@@ -29,9 +29,6 @@ export const Clipbench = {
 		}
 		if (text) {
 			return Clipbench.types.text;
-		}
-		if (Painter.selection.canvas && Toolbox.selected.id == 'copy_paste_tool') {
-			return Clipbench.types.texture_selection;
 		}
 		if (Modes.display) {
 			return Clipbench.types.display_slot
@@ -71,9 +68,6 @@ export const Clipbench = {
 		}
 		if (!Project) {
 			return Clipbench.types.image;
-		}
-		if (Painter.selection.canvas && Toolbox.selected.id == 'copy_paste_tool') {
-			return Clipbench.types.texture_selection;
 		}
 		if (Modes.display) {
 			return Clipbench.types.display_slot
@@ -197,9 +191,6 @@ export const Clipbench = {
 				let text = isApp ? clipboard.readText() : await navigator.clipboard.readText();
 				Blockbench.dispatchEvent('paste_text', {text});
 				break;
-			case 'texture_selection':
-				UVEditor.addPastingOverlay();
-				break;
 			case 'display_slot':
 				DisplayMode.paste();
 				break;
@@ -242,6 +233,7 @@ export const Clipbench = {
 			return;
 		}
 		arr.forEach(function(element) {
+			if (element.getTypeBehavior('duplicatable') == false) return;
 			Clipbench.elements.push(element.getSaveCopy())
 		})
 		if (isApp) {
@@ -265,7 +257,7 @@ export const Clipbench = {
 		})
 		for (let fkey in mesh.faces) {
 			let face = mesh.faces[fkey];
-			if (face.isSelected(fkey)) {
+			if (face.isSelected(fkey) && face.vertices.allAre(vkey => this.vertices[vkey])) {
 				this.faces[fkey] = new MeshFace(null, face);
 			}
 		}
@@ -287,6 +279,7 @@ export const Clipbench = {
 
 			for (let old_fkey in this.faces) {
 				let old_face = this.faces[old_fkey];
+				if (!old_face.vertices.allAre(old_vkey => old_vertices.includes(old_vkey))) continue;
 				let new_face = new MeshFace(mesh, old_face);
 				Property.resetUniqueValues(MeshFace, new_face);
 				let new_face_vertices = new_face.vertices.map(old_vkey => {
@@ -322,13 +315,13 @@ export const Clipbench = {
 		}
 		Outliner.selected.length = 0
 		if (isApp) {
-			var raw = clipboard.readHTML()
+			let raw = clipboard.readHTML()
 			try {
-				var data = JSON.parse(raw)
+				let data = JSON.parse(raw)
 				if (data.type === 'elements' && data.content) {
 					Clipbench.groups = undefined;
 					Clipbench.elements = data.content;
-				} else if (data.type === 'group' && data.content) {
+				} else if (data.type === 'groups' && data.content) {
 					Clipbench.groups = data.content;
 					Clipbench.elements = [];
 				}

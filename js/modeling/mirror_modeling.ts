@@ -31,7 +31,7 @@ export const MirrorModeling = {
 	},
 	createClone(original: OutlinerElement, undo_aspects: UndoAspects) {
 		// Create or update clone
-		let options = (BarItems.mirror_modeling as Toggle).tool_config.options;
+		let options = BarItems.mirror_modeling.tool_config.options;
 		let mirror_uv = options.mirror_uv;
 		let center = Format.centered_grid ? 0 : 8;
 		let mirror_element = MirrorModeling.cached_elements[original.uuid]?.counterpart;
@@ -48,7 +48,8 @@ export const MirrorModeling = {
 			mirror_element.flip(0, center);
 
 			mirror_element.extend({
-				name: element_before_snapshot.name
+				name: element_before_snapshot.name,
+				color: element_before_snapshot.color
 			});
 			if (!mirror_uv && element_type_options.maintainUV) {
 				element_type_options.maintainUV(mirror_element, element_before_snapshot)
@@ -146,7 +147,7 @@ export const MirrorModeling = {
 			origin: 'origin' in original ? original.origin : undefined,
 			rotation: 'rotation' in original ? original.rotation : undefined,
 			scale: 'scale' in original ? original.scale : undefined,
-			color: 'color' in original ? original.color : undefined,
+			// color: 'color' in original ? original.color : undefined,
 		});
 
 		if ('origin' in node) {
@@ -271,7 +272,7 @@ interface MirrorModelingElementTypeOptions {
 
 
 Blockbench.on('init_edit', (args) => {
-	if (!(BarItems.mirror_modeling as Toggle).value) return;
+	if (!BarItems.mirror_modeling.value) return;
 	let aspects = args.aspects as UndoAspects;
 
 	MirrorModeling.initial_transformer_position = Transformer.position.x;
@@ -336,7 +337,7 @@ Blockbench.on('init_edit', (args) => {
 	}
 })
 Blockbench.on('finish_edit', ({aspects}) => {
-	if (!(BarItems.mirror_modeling as Toggle).value) return;
+	if (!BarItems.mirror_modeling.value) return;
 
 	if (aspects.elements && aspects.mirror_modeling != false) {
 		aspects.elements = aspects.elements.slice();
@@ -548,7 +549,7 @@ MirrorModeling.registerElementType(Mesh, {
 	createLocalSymmetry(mesh: Mesh, cached_data) {
 		// Create or update clone
 		let edit_side = cached_data?.edit_side || MirrorModeling.getEditSide();
-		let options = (BarItems.mirror_modeling as Toggle).tool_config.options;
+		let options = BarItems.mirror_modeling.tool_config.options;
 		let mirror_uv = options.mirror_uv;
 		let pre_part_connections = cached_data?.pre_part_connections;
 
@@ -672,7 +673,7 @@ MirrorModeling.registerElementType(Mesh, {
 				}
 			}
 		}
-		if ((BarItems.selection_mode as BarSelect).value != 'object') {
+		if (BarItems.selection_mode.value != 'object') {
 			let selected_vertices = mesh.getSelectedVertices(true);
 			selected_vertices.replace(selected_vertices.filter(vkey => mesh.vertices[vkey]));
 			let selected_edges = mesh.getSelectedEdges(true);
@@ -719,7 +720,7 @@ MirrorModeling.registerElementType(ArmatureBone, {
 	},
 	createLocalSymmetry(element: ArmatureBone, cached_data) {
 		let edit_side = MirrorModeling.getEditSide();
-		let options = (BarItems.mirror_modeling as Toggle).tool_config.options;
+		let options = BarItems.mirror_modeling.tool_config.options;
 	},
 	updateCounterpart(original: ArmatureBone, counterpart: ArmatureBone, context: any) {
 		// Update vertex weights on off-centered bones
@@ -729,12 +730,14 @@ MirrorModeling.registerElementType(ArmatureBone, {
 	}
 })
 MirrorModeling.registerElementType(Billboard, {
+	// @ts-expect-error
 	isCentered(element: Billboard, {center}) {
 		if (Math.roundTo(element.position[0], 3) != center) return false;
 		if (!MirrorModeling.isParentTreeSymmetrical(element, {center})) return false;
 		//if (Math.roundTo(element.rotation[1], 3) || Math.roundTo(element.rotation[2], 3)) return false;
 		return true;
 	},
+	// @ts-expect-error
 	getMirroredElement(element: Billboard, {center}) {
 		let e = 0.01;
 		let symmetry_axes = [0];
@@ -757,6 +760,7 @@ MirrorModeling.registerElementType(Billboard, {
 		}
 		return false;
 	},
+	// @ts-expect-error
 	maintainUV(element: Billboard, original_data) {
 		element.extend({
 			faces: original_data.faces,
@@ -844,7 +848,6 @@ BARS.defineActions(() => {
 	})
 	Blockbench.on('update_selection', () => {
 		if (!Condition(allow_toggle.condition)) return;
-		// @ts-ignore
 		let disabled = Outliner.selected.find(el => el.allow_mirror_modeling === false);
 		if (allow_toggle.value != !disabled) {
 			allow_toggle.value = !disabled;
@@ -870,5 +873,9 @@ const global = {
 };
 declare global {
 	const MirrorModeling: typeof global.MirrorModeling
+	interface BarItemRegistry {
+		mirror_modeling: Toggle
+		apply_mirror_modeling: Action
+	}
 }
 Object.assign(window, global);

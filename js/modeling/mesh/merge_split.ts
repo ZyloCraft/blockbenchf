@@ -17,6 +17,25 @@ export function cleanupOverlappingMeshFaces(mesh: Mesh) {
 		}
 	}
 }
+function transferMeshWeights(old_mesh: Mesh, new_mesh: Mesh, vkeys: string[], updated_vkeys?: string[]) {
+	let armature = old_mesh.getArmature();
+	if (!armature) return;
+	let bones = armature.getAllBones();
+	for (let bone of bones) {
+		let i = 0;
+		for (let vkey of vkeys) {
+			let new_vkey = updated_vkeys ? updated_vkeys[i] ?? vkey : vkey;
+			if (new_mesh.vertices[new_vkey]) {
+				let value = bone.getVertexWeight(old_mesh, vkey);
+				bone.setVertexWeight(new_mesh, new_vkey, value);
+			}
+			if (!old_mesh.vertices[vkey]) {
+				bone.setVertexWeight(old_mesh, vkey);
+			}
+			i++;
+		}
+	}
+}
 
 BARS.defineActions(() => {
 	function mergeVertices(by_distance: boolean, in_center: boolean) {
@@ -212,6 +231,7 @@ BARS.defineActions(() => {
 			let elements = Mesh.selected.slice();
 			Undo.initEdit({elements, outliner: true});
 			let original = Mesh.selected[0];
+			let original_armature = original.getArmature();
 			let vector = new THREE.Vector3();
 
 			Mesh.selected.forEach(mesh => {
@@ -224,6 +244,10 @@ BARS.defineActions(() => {
 					original.mesh.worldToLocal(vector);
 					return vector.toArray()
 				}));
+				if (original_armature && original_armature == mesh.getArmature()) {
+					old_vertex_keys.forEach(vkey => delete mesh.vertices[vkey]);
+					transferMeshWeights(mesh, original, old_vertex_keys, new_vertex_keys);
+				}
 
 				for (let key in mesh.faces) {
 					let old_face = mesh.faces[key];
@@ -259,7 +283,13 @@ BARS.defineActions(() => {
 		},
 		click() {
 			let elements = Mesh.selected.slice();
-			Undo.initEdit({elements});
+			for (let mesh of elements) {
+				let armature = mesh.getArmature();
+				if (armature) {
+					elements.safePush(...armature.getAllBones());
+				}
+			}
+			Undo.initEdit({elements, outliner: true});
 
 			Mesh.selected.forEach(mesh => {
 
@@ -268,20 +298,22 @@ BARS.defineActions(() => {
 
 				let copy = new Mesh(mesh);
 				elements.push(copy);
+				let mesh_faces = mesh.faces;
+				let copy_faces = copy.faces;
 
-				for (let fkey in mesh.faces) {
-					let face = mesh.faces[fkey];
+				for (let fkey in mesh_faces) {
+					let face = mesh_faces[fkey];
 					if (face.isSelected(fkey)) {
-						delete mesh.faces[fkey];
+						delete mesh_faces[fkey];
 					} else {
-						delete copy.faces[fkey];
+						delete copy_faces[fkey];
 					}
 				}
 
 				selected_vertices.forEach(vkey => {
 					let used = false;
-					for (let key in mesh.faces) {
-						let face = mesh.faces[key];
+					for (let key in mesh_faces) {
+						let face = mesh_faces[key];
 						if (face.vertices.includes(vkey)) used = true;
 					}
 					if (!used) {
@@ -290,14 +322,15 @@ BARS.defineActions(() => {
 				})
 				Object.keys(copy.vertices).filter(vkey => !selected_vertices.includes(vkey)).forEach(vkey => {
 					let used = false;
-					for (let key in copy.faces) {
-						let face = copy.faces[key];
+					for (let key in copy_faces) {
+						let face = copy_faces[key];
 						if (face.vertices.includes(vkey)) used = true;
 					}
 					if (!used) {
 						delete copy.vertices[vkey];
 					}
 				})
+				transferMeshWeights(mesh, copy, selected_vertices);
 
 				copy.name += '_selection'
 				copy.sortInBefore(mesh, 1).init();

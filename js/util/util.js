@@ -75,6 +75,7 @@ export async function wait(delay) {
 		setTimeout(resolve, delay);
 	})
 }
+export function silentReject() {}
 
 export function pureMarked(input) {
 	let dom = marked(input);
@@ -109,6 +110,43 @@ ImageData.prototype.getIndex = function(x, y) {
     return (x + y * this.height) * 4;
 }
 
+export function getFaceKeyFromIndex(element, index) {
+	if (element.getTypeBehavior('cube_faces')) {
+		if (element.getTypeBehavior('select_faces')) {
+			// @ts-expect-error
+			return element.scene_object.geometry.faces[Math.floor(index / 2)];
+		} else {
+			return Object.keys(element.faces)[0];
+		}
+	} else if (element instanceof Mesh) {
+		for (let key in element.faces) {
+			let {vertices} = element.faces[key];
+			if (vertices.length < 3) continue;
+
+			if (index == 0 || (index == 1 && vertices.length == 4)) {
+				return key;
+			}
+			if (vertices.length == 3) index -= 1;
+			if (vertices.length == 4) index -= 2;
+		}
+	} else if (element instanceof SplineMesh) {
+		for (let key in element.faces) {
+			let {vertices} = element.faces[key];
+
+			if (index == 0 || (index == 1 && vertices.length == 4)) {
+				return key;
+			}
+			
+			index -= 2;
+		}
+	}
+}
+
+// TouchEvent does not exist in some browsers if the device does not support touch
+export function isTouchEvent(event) {
+	return 'TouchEvent' in window && event instanceof TouchEvent;
+}
+
 export function convertTouchEvent(event) {
 	if (event && event.changedTouches && event.changedTouches.length && event.offsetX == undefined) {
 		//event.preventDefault();
@@ -135,15 +173,19 @@ export function removeEventListeners(el, events, func, option) {
 		el.removeEventListener(e, func, option)
 	})
 }
+
+const text_measure_canvas = document.createElement('canvas');
+/**@type {CanvasRenderingContext2D} */
+export const text_measure_ctx = text_measure_canvas.getContext('2d');
 export function getStringWidth(string, size) {
-	let node = Interface.createElement('label', {style: 'position: absolute; visibility: hidden;'}, string);
-	if (size && size !== 16) {
-		node.style.fontSize = size + 'pt';
+	let initial_font;
+	if (size) {
+		initial_font = text_measure_ctx.font;
+		text_measure_ctx.font = `${size} ${initial_font.split(' ')[1]}`;
 	}
-	document.body.append(node);
-	let width = node.clientWidth;
-	node.remove();
-	return width + 1;
+	let measurements = text_measure_ctx.measureText(string);
+	if (initial_font) text_measure_ctx.font = initial_font;
+	return Math.ceil(measurements.width);
 };
 
 export function patchedAtob(base64) {
@@ -284,7 +326,7 @@ Date.prototype.getDateArray = function() {
 	return [
 		this.getDate(),
 		this.getMonth()+1,
-		this.getYear()+1900
+		this.getFullYear()
 	];
 }
 Date.prototype.getDateString = function() {
@@ -380,7 +422,11 @@ var Merge = {
 	},
 	molang(obj, source, index) {
 		if (typeof source[index] == 'string') {
-			obj[index] = source[index].replace(/-?\d\.\d+e-\d\d/g, '0');
+			if (source[index].includes('e')) {
+				obj[index] = source[index].replace(/-?\d\.\d+e-\d\d/g, '0');
+			} else {
+				obj[index] = source[index];
+			}
 		} else if (typeof source[index] == 'number') {
 			obj[index] = Math.roundTo(source[index], 9).toString();
 		}
@@ -537,7 +583,8 @@ export function getAverageRGB(imgEl, blockSize) {
 	try {
 		data = context.getImageData(0, 0, width, height);
 	} catch(e) {
-		/* security error, img on diff domain */alert('x');
+		/* security error, img on diff domain */;
+		console.error('Cannot get average RGB from a non-image')
 		return defaultRGB;
 	}
 	
@@ -742,6 +789,7 @@ Object.assign(window, {
 	Objector,
 	Merge,
 	pureMarked,
+	isTouchEvent,
 	convertTouchEvent,
 	addEventListeners,
 	removeEventListeners,

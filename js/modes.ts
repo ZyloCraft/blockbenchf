@@ -46,7 +46,6 @@ export class Mode extends KeybindItem {
 			data = id;
 			id = data.id;
 		}
-		// @ts-ignore
 		super(id, data)
 		this.id = id;
 		this.name = data.name || tl('mode.'+this.id);
@@ -80,6 +79,10 @@ export class Mode extends KeybindItem {
 	}
 	/**Selects the mode */
 	select() {
+		if (Toolbox.original instanceof Tool) {
+			Toolbox.original.select();
+			delete Toolbox.original;
+		}
 		if (Modes.selected instanceof Mode) {
 			Modes.selected.unselect();
 		}
@@ -128,7 +131,7 @@ export class Mode extends KeybindItem {
 		} else if (default_tool instanceof Tool) {
 			if (default_tool != Toolbox.selected) default_tool.select();
 		} else {
-			if (BarItems.move_tool != Toolbox.selected) (BarItems.move_tool as Tool).select();
+			if (BarItems.move_tool != Toolbox.selected) BarItems.move_tool.select();
 		}
 		updateInterface();
 		updateSelection();

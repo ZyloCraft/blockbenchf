@@ -1,7 +1,9 @@
+import { Filesystem } from "../file_system";
 import { Blockbench } from "../api";
 import { ipcRenderer } from "../native_apis";
 import { colorDistance } from "../util/util";
 import ColorPickerNormal from "./ColorPickerNormal.vue";
+import ColorPickerWheel from "./ColorPickerWheel.vue";
 
 //
 StateMemory.init('color_palettes', 'array')
@@ -65,14 +67,13 @@ export const ColorPanel = {
 		ColorPanel.panel.vue.editing_hsv = true;
 		ColorPanel.change({
 			h: ColorPanel.panel.vue._data.hsv.h,
-			s: ColorPanel.panel.vue._data.hsv.s/100,
-			v: ColorPanel.panel.vue._data.hsv.v/100
-		});
+			s: ColorPanel.panel.vue._data.hsv.s,
+			v: ColorPanel.panel.vue._data.hsv.v
+		}, ColorPanel.panel.vue.second_color_selected);
 	},
 	hexToHsv(hex) {
 		var color = new tinycolor(hex);
-		var tc = color.toHsv();
-		return {h: tc.h, s: tc.s*100, v: tc.v*100};
+		return color.toHsv();
 	},
 	addToHistory(color) {
 		color = color.toLowerCase();
@@ -115,7 +116,7 @@ export const ColorPanel = {
 
 		if (extension == 'png') {
 			var img = new Image();
-			img.src = file.content || file.path.replace(/#/g, '%23');
+			img.src = Filesystem.getImageSource(file);
 			img.onload = function() {
 				var c = document.createElement('canvas');
 				var ctx = c.getContext('2d');
@@ -547,7 +548,7 @@ Interface.definePanels(() => {
 			})
 		},
 		component: {
-			components: {ColorPickerNormal},
+			components: {ColorPickerNormal, ColorPickerWheel},
 			data: {
 				width: 100,
 				picker_height: 100,
@@ -568,7 +569,7 @@ Interface.definePanels(() => {
 				hsv: {
 					h: 0,
 					s: 0,
-					v: 0,
+					v: 1,
 				},
 				editing_hsv: false,
 				history: (saved_colors && saved_colors.history instanceof Array) ? saved_colors.history : []
@@ -581,18 +582,38 @@ Interface.definePanels(() => {
 							name: 'menu.color_picker.picker_type',
 							icon: 'palette',
 							children: [
-								{name: 'menu.color_picker.picker_type.square', icon: Settings.get('color_picker_style') == 'box' ? 'far.fa-dot-circle' : 'far.fa-circle', click: () => {
-									settings.color_picker_style.set('box');
-									Panels.color.onResize();
-								}},
-								{name: 'menu.color_picker.picker_type.wheel', icon: Settings.get('color_picker_style') == 'wheel' ? 'far.fa-dot-circle' : 'far.fa-circle', click: () => {
-									settings.color_picker_style.set('wheel');
-									Panels.color.onResize();
-								}},
-								{name: 'menu.color_picker.picker_type.normal', icon: Settings.get('color_picker_style') == 'normal' ? 'far.fa-dot-circle' : 'far.fa-circle', click: () => {
-									settings.color_picker_style.set('normal');
-									Panels.color.onResize();
-								}},
+								{
+									name: 'menu.color_picker.picker_type.square',
+									icon: Settings.get('color_picker_style') == 'box' ? 'far.fa-dot-circle' : 'far.fa-circle',
+									click: () => {
+										settings.color_picker_style.set('box');
+										Panels.color.onResize();
+									}
+								},
+								{
+									name: 'menu.color_picker.picker_type.wheel_static',
+									icon: Settings.get('color_picker_style') == 'wheel' ? 'far.fa-dot-circle' : 'far.fa-circle',
+									click: () => {
+										settings.color_picker_style.set('wheel');
+										Panels.color.onResize();
+									}
+								},
+								{
+									name: 'menu.color_picker.picker_type.wheel',
+									icon: Settings.get('color_picker_style') == 'wheel_rotate' ? 'far.fa-dot-circle' : 'far.fa-circle',
+									click: () => {
+										settings.color_picker_style.set('wheel_rotate');
+										Panels.color.onResize();
+									}
+								},
+								{
+									name: 'menu.color_picker.picker_type.normal',
+									icon: Settings.get('color_picker_style') == 'normal' ? 'far.fa-dot-circle' : 'far.fa-circle',
+									click: () => {
+										settings.color_picker_style.set('normal');
+										Panels.color.onResize();
+									}
+								},
 							]
 						},
 						{
@@ -640,6 +661,10 @@ Interface.definePanels(() => {
 				},
 				changeColor(color, secondary = this.second_color_selected) {
 					this[secondary ? 'second_color' : 'main_color'] = color;
+				},
+				changeHsv(hsv) {
+					this.editing_hsv = true;
+					ColorPanel.change(hsv, this.second_color_selected);
 				},
 				swapColors() {
 					BarItems.swap_colors.click();
@@ -728,7 +753,8 @@ Interface.definePanels(() => {
 						<div v-show="picker_type == 'box'" ref="square_picker" :style="{maxWidth: width + 'px', '--height': picker_height + 'px'}">
 							<input id="main_colorpicker">
 						</div>
-						<color-wheel v-if="picker_type == 'wheel' && width" :value="selected_color" @input="changeColor" :width="width" :height="width"></color-wheel>
+						<color-picker-wheel v-if="picker_type == 'wheel' && width" :rotate="false" :hsv="hsv" @input="changeHsv" :width="width" :height="width"></color-picker-wheel>
+						<color-picker-wheel v-if="picker_type == 'wheel_rotate' && width" :rotate="true" :hsv="hsv" @input="changeHsv" :width="width" :height="width"></color-picker-wheel>
 						<color-picker-normal v-if="picker_type == 'normal' && width" :value="selected_color" @input="changeColor" :width="width" :height="width"></color-picker-normal>
 						<div class="toolbar_wrapper color_picker" toolbar="color_picker"></div>
 					</div>
@@ -1145,11 +1171,11 @@ BARS.defineActions(function() {
 			return 1
 		},
 		get: function() {
-			return Math.round(ColorPanel.panel.vue._data.hsv.s);
+			return Math.round(ColorPanel.panel.vue._data.hsv.s * 100);
 		},
 		change: function(modify) {
-			var value = modify(ColorPanel.panel.vue._data.hsv.s);
-			ColorPanel.panel.vue._data.hsv.s = Math.clamp(value, this.settings.min, this.settings.max);
+			var value = modify(ColorPanel.panel.vue._data.hsv.s * 100);
+			ColorPanel.panel.vue._data.hsv.s = Math.clamp(value, this.settings.min, this.settings.max) / 100;
 			ColorPanel.updateFromHsv();
 		}
 	})
@@ -1165,11 +1191,11 @@ BARS.defineActions(function() {
 			return 1
 		},
 		get: function() {
-			return Math.round(ColorPanel.panel.vue._data.hsv.v);
+			return Math.round(ColorPanel.panel.vue._data.hsv.v * 100);
 		},
 		change: function(modify) {
-			var value = modify(ColorPanel.panel.vue._data.hsv.v);
-			ColorPanel.panel.vue._data.hsv.v = Math.clamp(value, this.settings.min, this.settings.max);
+			var value = modify(ColorPanel.panel.vue._data.hsv.v * 100);
+			ColorPanel.panel.vue._data.hsv.v = Math.clamp(value, this.settings.min, this.settings.max) / 100;
 			ColorPanel.updateFromHsv();
 		}
 	})
@@ -1190,7 +1216,8 @@ BARS.defineActions(function() {
 			var value = Math.clamp(modify(this.get()), 0, 255);
 			let hex = parseInt(value).toString(16);
 			if (hex.length == 1) hex = '0' + hex;
-			ColorPanel.panel.vue.main_color = ColorPanel.panel.vue.main_color.substring(0, 1) + hex + ColorPanel.panel.vue.main_color.substring(3);
+			let main_color = ColorPanel.panel.vue.main_color;
+			ColorPanel.panel.vue.main_color = main_color.substring(0, 1) + hex + main_color.substring(3);
 		}
 	})
 	let green = new NumSlider('slider_color_green', {
@@ -1207,7 +1234,8 @@ BARS.defineActions(function() {
 			var value = Math.clamp(modify(this.get()), 0, 255);
 			let hex = parseInt(value).toString(16);
 			if (hex.length == 1) hex = '0' + hex;
-			ColorPanel.panel.vue.main_color = ColorPanel.panel.vue.main_color.substring(0, 3) + hex + ColorPanel.panel.vue.main_color.substring(5);
+			let main_color = ColorPanel.panel.vue.main_color;
+			ColorPanel.panel.vue.main_color = main_color.substring(0, 3) + hex + main_color.substring(5);
 		}
 	})
 	let blue = new NumSlider('slider_color_blue', {
@@ -1224,7 +1252,8 @@ BARS.defineActions(function() {
 			var value = Math.clamp(modify(this.get()), 0, 255);
 			let hex = parseInt(value).toString(16);
 			if (hex.length == 1) hex = '0' + hex;
-			ColorPanel.panel.vue.main_color = ColorPanel.panel.vue.main_color.substring(0, 5) + hex;
+			let main_color = ColorPanel.panel.vue.main_color;
+			ColorPanel.panel.vue.main_color = main_color.substring(0, 5) + hex;
 		}
 	})
 	let slider_vector_rgb = [red, green, blue];
