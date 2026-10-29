@@ -13,6 +13,89 @@ jobs:
         with:
           node-version: 20
 
+      # ---------- 1) Patch Blockbench source (save dialog + native look) ----------
+      - name: Patch source
+        run: |
+          cat > /tmp/helper.ts << 'EOF'
+          import { registerPlugin } from '@capacitor/core'
+
+          interface SaveFilePluginInterface {
+              saveFile(options: { fileName: string; data: string; mimeType: string }): Promise<{ uri: string }>;
+          }
+          const SaveFilePlugin = registerPlugin<SaveFilePluginInterface>('SaveFilePlugin');
+
+          async function capacitorSaveFile(content: any, file_name: string): Promise<boolean> {
+              try {
+                  let data: string;
+                  if (content instanceof Blob) {
+                      data = await new Promise<string>((resolve, reject) => {
+                          let reader = new FileReader();
+                          reader.onload = () => resolve((reader.result as string).split(',')[1]);
+                          reader.onerror = reject;
+                          reader.readAsDataURL(content);
+                      });
+                  } else if (typeof content === 'string' && content.startsWith('data:')) {
+                      data = content.split(',')[1];
+                  } else {
+                      data = btoa(unescape(encodeURIComponent(content)));
+                  }
+                  let extension = file_name.split('.').pop();
+                  let mimeType = 'application/octet-stream';
+                  if (extension === 'png') mimeType = 'image/png';
+                  else if (extension === 'json' || extension === 'bbmodel') mimeType = 'application/json';
+                  else mimeType = 'text/plain';
+
+                  await SaveFilePlugin.saveFile({ fileName: file_name, data, mimeType });
+                  return true;
+              } catch (e) {
+                  console.error('Capacitor save failed', e);
+                  return false;
+              }
+          }
+          function blockbenchSaveAs(content: any, file_name: string, options: any = {}) {
+              // @ts-ignore
+              if (window.Capacitor && window.Capacitor.isNativePlatform && window.Capacitor.isNativePlatform()) {
+                  capacitorSaveFile(content, file_name).then(ok => {
+                      if (!ok) saveAs(content, file_name, options);
+                  });
+              } else {
+                  saveAs(content, file_name, options);
+              }
+          }
+          EOF
+          cat > /tmp/patch.py << 'EOF'
+          p = 'js/file_system.ts'
+          s = open(p, encoding='utf-8').read()
+          if 'blockbenchSaveAs' in s:
+              print('Already patched, skipping')
+          else:
+              helper = open('/tmp/helper.ts', encoding='utf-8').read()
+              marker = "import saveAs from 'file-saver'"
+              assert marker in s, 'PATCH FAILED: import line not found'
+              for old, new in [
+                  ("saveAs(options.content, file_name, {})", "blockbenchSaveAs(options.content, file_name, {})"),
+                  ("saveAs(blob, file_name, {autoBOM: true})", "blockbenchSaveAs(blob, file_name, {autoBOM: true})"),
+                  ("saveAs(blob, file_name)", "blockbenchSaveAs(blob, file_name)"),
+              ]:
+                  assert old in s, 'PATCH FAILED: not found -> ' + old
+                  s = s.replace(old, new)
+              s = s.replace(marker, marker + '\n' + helper, 1)
+              open(p, 'w', encoding='utf-8').write(s)
+              print('Patched OK')
+          EOF
+          python3 /tmp/patch.py
+          cat >> css/general.css << 'EOF'
+
+          /* ---- native app feel ---- */
+          * { -webkit-tap-highlight-color: transparent; -webkit-touch-callout: none; }
+          html, body { overscroll-behavior: none; }
+          *:focus { outline: none; }
+          *:not(input):not(textarea):not([contenteditable]) { -webkit-user-select: none; user-select: none; }
+          input, textarea, [contenteditable], .selectable, .selectable * { -webkit-user-select: text; user-select: text; }
+          EOF
+          sed -i 's#initial-scale=1"#initial-scale=1, maximum-scale=1, user-scalable=no"#' index.html
+
+      # ---------- 2) Build the web app ----------
       - run: npm install
       - run: npm install @capacitor/core
       - run: npm run build-web
@@ -23,11 +106,25 @@ jobs:
           cp index.html manifest.webmanifest favicon.png icon.png icon_full.png icon_maskable.png www/
           cp -r css assets font lib lang content dist www/
 
+      # ---------- 3) Create the Android project ----------
       - run: npm install @capacitor/android @capacitor/cli
-      - run: npx cap init "Blockbench" "com.zyr7.blockbench" --web-dir=www
+
+      - name: Capacitor config
+        run: |
+          cat > capacitor.config.json << 'EOF'
+          {
+            "appId": "com.zyr7.blockbench",
+            "appName": "Blockbench",
+            "webDir": "www",
+            "backgroundColor": "#181b1f",
+            "android": { "backgroundColor": "#181b1f" }
+          }
+          EOF
+
       - run: npx cap add android
       - run: npx cap sync android
 
+      # ---------- 4) Native "Save As" plugin ----------
       - name: Add custom Save File native plugin
         run: |
           PKG_DIR="android/app/src/main/java/com/zyr7/blockbench"
@@ -99,6 +196,8 @@ jobs:
           package com.zyr7.blockbench;
 
           import android.os.Bundle;
+          import android.view.View;
+          import android.webkit.WebView;
           import com.getcapacitor.BridgeActivity;
 
           public class MainActivity extends BridgeActivity {
@@ -106,10 +205,72 @@ jobs:
               public void onCreate(Bundle savedInstanceState) {
                   registerPlugin(SaveFilePlugin.class);
                   super.onCreate(savedInstanceState);
+                  WebView webView = getBridge().getWebView();
+                  webView.setOverScrollMode(View.OVER_SCROLL_NEVER);
+                  webView.setBackgroundColor(0xFF181B1F);
               }
           }
           EOF
 
+      # ---------- 5) Native look: icon, splash, bar colors (cosmetic, never breaks the build) ----------
+      - name: Native look (icon, splash, bar colors)
+        continue-on-error: true
+        run: |
+          pip install pillow
+          cat > /tmp/look.py << 'EOF'
+          from PIL import Image
+          import glob, os, re
+
+          RES = 'android/app/src/main/res'
+          BG = (24, 27, 31, 255)
+          icon = Image.open('icon.png').convert('RGBA')
+
+          def put_center(canvas, img, ratio):
+              size = int(min(canvas.size) * ratio)
+              small = img.resize((size, size), Image.LANCZOS)
+              canvas.paste(small, ((canvas.width - size) // 2, (canvas.height - size) // 2), small)
+
+          # launcher icons
+          for name, scale in {'mdpi': 1, 'hdpi': 1.5, 'xhdpi': 2, 'xxhdpi': 3, 'xxxhdpi': 4}.items():
+              d = f'{RES}/mipmap-{name}'
+              if not os.path.isdir(d):
+                  continue
+              legacy = Image.new('RGBA', (int(48 * scale),) * 2, BG)
+              put_center(legacy, icon, 0.92)
+              legacy.save(f'{d}/ic_launcher.png')
+              legacy.save(f'{d}/ic_launcher_round.png')
+              layer = Image.new('RGBA', (int(108 * scale),) * 2, (0, 0, 0, 0))
+              put_center(layer, icon, 0.62)
+              layer.save(f'{d}/ic_launcher_foreground.png')
+
+          os.makedirs(f'{RES}/values', exist_ok=True)
+          open(f'{RES}/values/ic_launcher_background.xml', 'w').write(
+              '<?xml version="1.0" encoding="utf-8"?>\n<resources>\n    <color name="ic_launcher_background">#181b1f</color>\n</resources>\n')
+
+          # splash images
+          for p in glob.glob(f'{RES}/drawable*/splash.png'):
+              w, h = Image.open(p).size
+              canvas = Image.new('RGBA', (w, h), BG)
+              put_center(canvas, icon, 0.28)
+              canvas.save(p)
+
+          # status bar / navigation bar / splash background colors
+          p = f'{RES}/values/styles.xml'
+          s = open(p, encoding='utf-8').read()
+          bars = '        <item name="android:statusBarColor">#181b1f</item>\n        <item name="android:navigationBarColor">#101316</item>\n'
+          def fix(m):
+              block = m.group(0)
+              extra = bars
+              if 'Theme.SplashScreen' in m.group(1) and 'windowSplashScreenBackground' not in block:
+                  extra += '        <item name="windowSplashScreenBackground">#181b1f</item>\n'
+              return block.replace('</style>', extra + '    </style>')
+          s = re.sub(r'<style name="[^"]+" parent="([^"]*)">.*?</style>', fix, s, flags=re.S)
+          open(p, 'w', encoding='utf-8').write(s)
+          print('Native look applied')
+          EOF
+          python3 /tmp/look.py
+
+      # ---------- 6) Fixes + build ----------
       - name: Fix Kotlin stdlib duplicate classes
         run: |
           echo "" >> android/build.gradle
@@ -119,6 +280,18 @@ jobs:
           echo "        exclude group: 'org.jetbrains.kotlin', module: 'kotlin-stdlib-jdk8'" >> android/build.gradle
           echo "    }" >> android/build.gradle
           echo "}" >> android/build.gradle
+
+      - name: Restore signing key (optional, keeps updates installable over old versions)
+        env:
+          KEYSTORE_B64: ${{ secrets.DEBUG_KEYSTORE_B64 }}
+        run: |
+          if [ -n "$KEYSTORE_B64" ]; then
+            mkdir -p ~/.android
+            echo "$KEYSTORE_B64" | base64 -d > ~/.android/debug.keystore
+            echo "Signing key restored"
+          else
+            echo "No signing key secret set, using a fresh debug key"
+          fi
 
       - uses: actions/setup-java@v4
         with:
