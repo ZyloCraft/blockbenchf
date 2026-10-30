@@ -18,14 +18,35 @@ jobs:
         run: |
           cat > /tmp/helper.ts << 'EOF'
           import { registerPlugin } from '@capacitor/core'
+          import JSZip from 'jszip'
 
           interface SaveFilePluginInterface {
               saveFile(options: { fileName: string; data: string; mimeType: string }): Promise<{ uri: string }>;
           }
           const SaveFilePlugin = registerPlugin<SaveFilePluginInterface>('SaveFilePlugin');
 
+          const MIME_BY_EXTENSION: Record<string, string> = {
+              png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp',
+              zip: 'application/zip', json: 'application/json', txt: 'text/plain',
+          };
+
           async function capacitorSaveFile(content: any, file_name: string): Promise<boolean> {
               try {
+                  // "assets.zip" is Blockbench's multi-file export. If it only holds one real file, save that file alone.
+                  if (file_name === 'assets.zip' && content instanceof Blob) {
+                      try {
+                          let zip = await JSZip.loadAsync(content);
+                          let names = Object.keys(zip.files).filter(n => !zip.files[n].dir);
+                          let has_images = names.some(n => /\.(png|jpe?g|tga)$/i.test(n));
+                          let real = names.filter(n => has_images || !/\.mtl$/i.test(n));
+                          if (real.length === 1) {
+                              content = await zip.files[real[0]].async('blob');
+                              file_name = real[0].split('/').pop();
+                          }
+                      } catch (e) {
+                          console.warn('Could not inspect zip', e);
+                      }
+                  }
                   let data: string;
                   if (content instanceof Blob) {
                       data = await new Promise<string>((resolve, reject) => {
@@ -39,15 +60,13 @@ jobs:
                   } else {
                       data = btoa(unescape(encodeURIComponent(content)));
                   }
-                  let extension = file_name.split('.').pop();
-                  let mimeType = 'application/octet-stream';
-                  if (extension === 'png') mimeType = 'image/png';
-                  else if (extension === 'json' || extension === 'bbmodel') mimeType = 'application/json';
-                  else mimeType = 'text/plain';
+                  let extension = (file_name.split('.').pop() || '').toLowerCase();
+                  let mimeType = MIME_BY_EXTENSION[extension] || 'application/octet-stream';
 
                   await SaveFilePlugin.saveFile({ fileName: file_name, data, mimeType });
                   return true;
               } catch (e) {
+                  if (e && String((e as any).message || e).toLowerCase().includes('cancel')) return true;
                   console.error('Capacitor save failed', e);
                   return false;
               }
@@ -123,6 +142,12 @@ jobs:
 
       - run: npx cap add android
       - run: npx cap sync android
+
+      - name: Bump version (so updates install over old ones)
+        run: |
+          sed -i -E "s/versionCode [0-9]+/versionCode ${{ github.run_number }}/" android/app/build.gradle
+          sed -i -E "s/versionName \"[^\"]*\"/versionName \"1.${{ github.run_number }}\"/" android/app/build.gradle
+          grep -n "versionCode\|versionName" android/app/build.gradle
 
       # ---------- 4) Native "Save As" plugin ----------
       - name: Add custom Save File native plugin
@@ -281,17 +306,16 @@ jobs:
           echo "    }" >> android/build.gradle
           echo "}" >> android/build.gradle
 
-      - name: Restore signing key (optional, keeps updates installable over old versions)
+      - name: Restore signing key (same key every build, so updates install over old versions)
         env:
           KEYSTORE_B64: ${{ secrets.DEBUG_KEYSTORE_B64 }}
         run: |
-          if [ -n "$KEYSTORE_B64" ]; then
-            mkdir -p ~/.android
-            echo "$KEYSTORE_B64" | base64 -d > ~/.android/debug.keystore
-            echo "Signing key restored"
-          else
-            echo "No signing key secret set, using a fresh debug key"
+          mkdir -p ~/.android
+          if [ -z "$KEYSTORE_B64" ]; then
+            KEYSTORE_B64="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"
           fi
+          echo "$KEYSTORE_B64" | base64 -d > ~/.android/debug.keystore
+          keytool -list -keystore ~/.android/debug.keystore -storepass android | tail -2
 
       - uses: actions/setup-java@v4
         with:
