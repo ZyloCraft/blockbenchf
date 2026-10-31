@@ -22,6 +22,7 @@ jobs:
 
           interface SaveFilePluginInterface {
               saveFile(options: { fileName: string; data: string; mimeType: string }): Promise<{ uri: string }>;
+              setBackEnabled(options: { enabled: boolean }): Promise<void>;
           }
           const SaveFilePlugin = registerPlugin<SaveFilePluginInterface>('SaveFilePlugin');
 
@@ -81,12 +82,130 @@ jobs:
                   saveAs(content, file_name, options);
               }
           }
+
+          // ---- Android back gesture (predictive back): shrink + blur while swiping, then close ----
+          function setupNativeBack() {
+              const w = window as any;
+              if (!(w.Capacitor && w.Capacitor.isNativePlatform && w.Capacitor.isNativePlatform())) return;
+
+              let nativeEnabled = false;
+              let closing = false;
+              let current: { el: HTMLElement | null, close: () => void } | null = null;
+
+              function findTop(): { el: HTMLElement | null, close: () => void } | null {
+                  try {
+                      const oi = w.open_interface;
+                      if (oi && typeof oi === 'object') {
+                          if (typeof oi.cancel === 'function') return { el: oi.object || null, close: () => oi.cancel() };
+                          if (typeof oi.hide === 'function') return { el: oi.object || null, close: () => oi.hide() };
+                      } else if (typeof oi === 'string' && oi && w.open_dialog) {
+                          const id = w.open_dialog;
+                          return { el: document.getElementById(id), close: () => w.$('dialog#' + id).find('.cancel_btn:not([disabled])').trigger('click') };
+                      }
+                      const newTab = w.Interface && w.Interface.tab_bar && w.Interface.tab_bar.new_tab;
+                      if (newTab && newTab.visible) return { el: null, close: () => newTab.close() };
+                      if (w.open_menu) return { el: null, close: () => w.open_menu.hide() };
+                      if (w.ReferenceImageMode && w.ReferenceImageMode.active) return { el: null, close: () => w.ReferenceImageMode.deactivate() };
+                  } catch (e) { /* ignore */ }
+                  return null;
+              }
+              function blackout(): HTMLElement | null {
+                  return document.getElementById('blackout');
+              }
+              function resetStyles(el: HTMLElement | null) {
+                  if (el) {
+                      el.style.transform = '';
+                      el.style.opacity = '';
+                      el.style.transition = '';
+                  }
+                  const b = blackout();
+                  if (b) {
+                      b.style.opacity = '';
+                      b.style.backgroundColor = '';
+                      b.style.backdropFilter = '';
+                      (b.style as any).webkitBackdropFilter = '';
+                      b.style.transition = '';
+                  }
+              }
+              function apply(progress: number, edge: number) {
+                  const p = Math.max(0, Math.min(1, progress));
+                  if (current && current.el) {
+                      const dx = (edge === 1 ? -1 : 1) * p * 24;
+                      current.el.style.transition = 'none';
+                      current.el.style.transform = 'translateX(' + dx + 'px) scale(' + (1 - 0.1 * p) + ')';
+                      current.el.style.opacity = String(1 - 0.35 * p);
+                  }
+                  const b = blackout();
+                  if (b && b.style.display !== 'none') {
+                      const blur = 'blur(' + (8 * (1 - p)) + 'px)';
+                      b.style.transition = 'none';
+                      b.style.opacity = '1';
+                      b.style.backgroundColor = 'rgba(16,19,22,' + (0.55 * (1 - p)) + ')';
+                      b.style.backdropFilter = blur;
+                      (b.style as any).webkitBackdropFilter = blur;
+                  }
+              }
+
+              w.__bbBack = {
+                  start(edge: number) {
+                      closing = false;
+                      current = findTop();
+                      apply(0, edge);
+                  },
+                  progress(p: number, edge: number) {
+                      if (current) apply(p, edge);
+                  },
+                  cancel() {
+                      const el = current && current.el;
+                      if (el) {
+                          el.style.transition = 'transform .18s ease, opacity .18s ease';
+                          el.style.transform = '';
+                          el.style.opacity = '';
+                      }
+                      setTimeout(() => resetStyles(el), 200);
+                      current = null;
+                  },
+                  commit() {
+                      const top = current || findTop();
+                      current = null;
+                      if (!top) return false;
+                      if (closing) return true;
+                      closing = true;
+                      const el = top.el;
+                      if (el) {
+                          el.style.transition = 'transform .16s ease-in, opacity .16s ease-in';
+                          el.style.transform = 'scale(0.88)';
+                          el.style.opacity = '0';
+                      }
+                      setTimeout(() => {
+                          try { top.close(); } catch (e) { console.error(e); }
+                          resetStyles(el);
+                          closing = false;
+                      }, el ? 150 : 0);
+                      return true;
+                  }
+              };
+
+              // Tell the native side when there is something to close, so the system can play its own
+              // back-to-home animation the rest of the time.
+              setInterval(() => {
+                  const should = !!findTop();
+                  if (should !== nativeEnabled) {
+                      nativeEnabled = should;
+                      SaveFilePlugin.setBackEnabled({ enabled: should }).catch(() => {});
+                  }
+              }, 100);
+          }
+          setupNativeBack();
           EOF
           cat > /tmp/patch.py << 'EOF'
+          import re
+
+          # --- file_system.ts: native save dialog + back gesture ---
           p = 'js/file_system.ts'
           s = open(p, encoding='utf-8').read()
           if 'blockbenchSaveAs' in s:
-              print('Already patched, skipping')
+              print('file_system.ts already patched, skipping')
           else:
               helper = open('/tmp/helper.ts', encoding='utf-8').read()
               marker = "import saveAs from 'file-saver'"
@@ -100,7 +219,23 @@ jobs:
                   s = s.replace(old, new)
               s = s.replace(marker, marker + '\n' + helper, 1)
               open(p, 'w', encoding='utf-8').write(s)
-              print('Patched OK')
+              print('file_system.ts patched OK')
+
+          # --- web.js: the web "back = undo" history trick must not run inside the app ---
+          p = 'js/web.js'
+          s = open(p, encoding='utf-8').read()
+          if 'bb_native' in s:
+              print('web.js already patched, skipping')
+          else:
+              guard = "(window.Capacitor && window.Capacitor.isNativePlatform && window.Capacitor.isNativePlatform())"
+              pat_load = re.compile(r"addEventListener\('load', function\(\) \{(\s*)window\.history\.pushState\(\{\}, ''\)")
+              assert pat_load.search(s), 'PATCH FAILED: web.js load handler not found'
+              s = pat_load.sub(lambda m: "addEventListener('load', function() {" + m.group(1) + "/* bb_native */ if (" + guard + ") return;" + m.group(1) + "window.history.pushState({}, '')", s, count=1)
+              pat_pop = re.compile(r"addEventListener\('popstate', e => \{")
+              assert pat_pop.search(s), 'PATCH FAILED: web.js popstate handler not found'
+              s = pat_pop.sub(lambda m: "addEventListener('popstate', e => {\n\tif " + guard + " return;", s, count=1)
+              open(p, 'w', encoding='utf-8').write(s)
+              print('web.js patched OK')
           EOF
           python3 /tmp/patch.py
           cat >> css/general.css << 'EOF'
@@ -111,12 +246,14 @@ jobs:
           *:focus { outline: none; }
           *:not(input):not(textarea):not([contenteditable]) { -webkit-user-select: none; user-select: none; }
           input, textarea, [contenteditable], .selectable, .selectable * { -webkit-user-select: text; user-select: text; }
+          dialog.dialog { animation: bbDialogIn .2s cubic-bezier(.2,.8,.2,1); }
+          @keyframes bbDialogIn { from { opacity: 0; transform: scale(.94); } to { opacity: 1; transform: none; } }
           EOF
           sed -i 's#initial-scale=1"#initial-scale=1, maximum-scale=1, user-scalable=no"#' index.html
 
       # ---------- 2) Build the web app ----------
       - run: npm install
-      - run: npm install @capacitor/core
+      - run: npm install @capacitor/core@7
       - run: npm run build-web
 
       - name: Prepare web folder
@@ -124,9 +261,10 @@ jobs:
           mkdir -p www
           cp index.html manifest.webmanifest favicon.png icon.png icon_full.png icon_maskable.png www/
           cp -r css assets font lib lang content dist www/
+          rm -f www/dist/*.map
 
       # ---------- 3) Create the Android project ----------
-      - run: npm install @capacitor/android @capacitor/cli
+      - run: npm install @capacitor/android@7 @capacitor/cli@7
 
       - name: Capacitor config
         run: |
@@ -148,6 +286,13 @@ jobs:
           sed -i -E "s/versionCode [0-9]+/versionCode ${{ github.run_number }}/" android/app/build.gradle
           sed -i -E "s/versionName \"[^\"]*\"/versionName \"1.${{ github.run_number }}\"/" android/app/build.gradle
           grep -n "versionCode\|versionName" android/app/build.gradle
+
+      - name: Android settings (Android 6.0+, predictive back)
+        run: |
+          sed -i -E "s/minSdkVersion = [0-9]+/minSdkVersion = 23/" android/variables.gradle
+          grep -n "minSdkVersion\|compileSdkVersion\|targetSdkVersion" android/variables.gradle
+          sed -i '0,/<application/s//<application android:enableOnBackInvokedCallback="true"/' android/app/src/main/AndroidManifest.xml
+          grep -c 'enableOnBackInvokedCallback="true"' android/app/src/main/AndroidManifest.xml
 
       # ---------- 4) Native "Save As" plugin ----------
       - name: Add custom Save File native plugin
@@ -192,6 +337,13 @@ jobs:
                   startActivityForResult(call, intent, "handleSaveResult");
               }
 
+              @PluginMethod
+              public void setBackEnabled(PluginCall call) {
+                  final boolean enabled = call.getBoolean("enabled", false);
+                  getActivity().runOnUiThread(() -> MainActivity.setWebBackEnabled(enabled));
+                  call.resolve();
+              }
+
               @ActivityCallback
               private void handleSaveResult(PluginCall call, ActivityResult result) {
                   if (call == null) return;
@@ -220,12 +372,31 @@ jobs:
           cat > "$PKG_DIR/MainActivity.java" << 'EOF'
           package com.zyr7.blockbench;
 
+          import android.os.Build;
           import android.os.Bundle;
           import android.view.View;
           import android.webkit.WebView;
+          import androidx.activity.BackEventCompat;
+          import androidx.activity.OnBackPressedCallback;
+          import androidx.annotation.NonNull;
           import com.getcapacitor.BridgeActivity;
 
           public class MainActivity extends BridgeActivity {
+              private static OnBackPressedCallback webBackCallback;
+
+              static void setWebBackEnabled(boolean enabled) {
+                  if (webBackCallback != null) {
+                      webBackCallback.setEnabled(enabled);
+                  }
+              }
+
+              private void runJs(String js) {
+                  WebView webView = getBridge().getWebView();
+                  if (webView != null) {
+                      webView.evaluateJavascript(js, null);
+                  }
+              }
+
               @Override
               public void onCreate(Bundle savedInstanceState) {
                   registerPlugin(SaveFilePlugin.class);
@@ -233,6 +404,57 @@ jobs:
                   WebView webView = getBridge().getWebView();
                   webView.setOverScrollMode(View.OVER_SCROLL_NEVER);
                   webView.setBackgroundColor(0xFF181B1F);
+
+                  webBackCallback = new OnBackPressedCallback(false) {
+                      @Override
+                      public void handleOnBackStarted(@NonNull BackEventCompat backEvent) {
+                          runJs("window.__bbBack&&window.__bbBack.start(" + backEvent.getSwipeEdge() + ")");
+                      }
+
+                      @Override
+                      public void handleOnBackProgressed(@NonNull BackEventCompat backEvent) {
+                          runJs("window.__bbBack&&window.__bbBack.progress(" + backEvent.getProgress() + "," + backEvent.getSwipeEdge() + ")");
+                      }
+
+                      @Override
+                      public void handleOnBackCancelled() {
+                          runJs("window.__bbBack&&window.__bbBack.cancel()");
+                      }
+
+                      @Override
+                      public void handleOnBackPressed() {
+                          getBridge().getWebView().evaluateJavascript(
+                              "(window.__bbBack?window.__bbBack.commit():false)",
+                              value -> {
+                                  if (!"true".equals(value)) {
+                                      setEnabled(false);
+                                      MainActivity.this.onBackPressed();
+                                  }
+                              }
+                          );
+                      }
+                  };
+                  getOnBackPressedDispatcher().addCallback(this, webBackCallback);
+              }
+
+              @Override
+              @SuppressWarnings("deprecation")
+              public void onBackPressed() {
+                  if (webBackCallback != null && webBackCallback.isEnabled()) {
+                      super.onBackPressed();
+                      return;
+                  }
+                  if (Build.VERSION.SDK_INT < 31) {
+                      moveTaskToBack(true);
+                  } else {
+                      super.onBackPressed();
+                  }
+              }
+
+              @Override
+              protected void onDestroy() {
+                  webBackCallback = null;
+                  super.onDestroy();
               }
           }
           EOF
