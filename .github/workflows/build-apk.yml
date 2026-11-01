@@ -88,6 +88,9 @@ jobs:
               const w = window as any;
               if (!(w.Capacitor && w.Capacitor.isNativePlatform && w.Capacitor.isNativePlatform())) return;
 
+              // Back is handled natively: disable the web version's history trick (back = undo)
+              try { window.history.pushState = function () {}; } catch (e) { /* ignore */ }
+
               let nativeEnabled = false;
               let closing = false;
               let current: { el: HTMLElement | null, close: () => void } | null = null;
@@ -199,9 +202,6 @@ jobs:
           setupNativeBack();
           EOF
           cat > /tmp/patch.py << 'EOF'
-          import re
-
-          # --- file_system.ts: native save dialog + back gesture ---
           p = 'js/file_system.ts'
           s = open(p, encoding='utf-8').read()
           if 'blockbenchSaveAs' in s:
@@ -220,26 +220,9 @@ jobs:
               s = s.replace(marker, marker + '\n' + helper, 1)
               open(p, 'w', encoding='utf-8').write(s)
               print('file_system.ts patched OK')
-
-          # --- web.js: the web "back = undo" history trick must not run inside the app ---
-          p = 'js/web.js'
-          s = open(p, encoding='utf-8').read()
-          if 'bb_native' in s:
-              print('web.js already patched, skipping')
-          else:
-              guard = "(window.Capacitor && window.Capacitor.isNativePlatform && window.Capacitor.isNativePlatform())"
-              pat_load = re.compile(r"addEventListener\('load', function\(\) \{(\s*)window\.history\.pushState\(\{\}, ''\)")
-              assert pat_load.search(s), 'PATCH FAILED: web.js load handler not found'
-              s = pat_load.sub(lambda m: "addEventListener('load', function() {" + m.group(1) + "/* bb_native */ if (" + guard + ") return;" + m.group(1) + "window.history.pushState({}, '')", s, count=1)
-              pat_pop = re.compile(r"addEventListener\('popstate', e => \{")
-              assert pat_pop.search(s), 'PATCH FAILED: web.js popstate handler not found'
-              s = pat_pop.sub(lambda m: "addEventListener('popstate', e => {\n\tif " + guard + " return;", s, count=1)
-              open(p, 'w', encoding='utf-8').write(s)
-              print('web.js patched OK')
           EOF
           python3 /tmp/patch.py
-          cat >> css/general.css << 'EOF'
-
+          cat > css/native_app.css << 'CSSEOF'
           /* ---- native app feel ---- */
           * { -webkit-tap-highlight-color: transparent; -webkit-touch-callout: none; }
           html, body { overscroll-behavior: none; }
@@ -248,8 +231,18 @@ jobs:
           input, textarea, [contenteditable], .selectable, .selectable * { -webkit-user-select: text; user-select: text; }
           dialog.dialog { animation: bbDialogIn .2s cubic-bezier(.2,.8,.2,1); }
           @keyframes bbDialogIn { from { opacity: 0; transform: scale(.94); } to { opacity: 1; transform: none; } }
-          EOF
-          sed -i 's#initial-scale=1"#initial-scale=1, maximum-scale=1, user-scalable=no"#' index.html
+          CSSEOF
+          python3 - << 'PYEOF'
+          p = 'index.html'
+          s = open(p, encoding='utf-8').read()
+          if 'native_app.css' not in s:
+              assert '</head>' in s, 'PATCH FAILED: </head> not found in index.html'
+              s = s.replace('</head>', '<link rel="stylesheet" href="css/native_app.css">\n</head>', 1)
+          if 'user-scalable' not in s:
+              s = s.replace('initial-scale=1"', 'initial-scale=1, maximum-scale=1, user-scalable=no"', 1)
+          open(p, 'w', encoding='utf-8').write(s)
+          print('index.html patched')
+          PYEOF
 
       # ---------- 2) Build the web app ----------
       - run: npm install
@@ -259,9 +252,11 @@ jobs:
       - name: Prepare web folder
         run: |
           mkdir -p www
-          cp index.html manifest.webmanifest favicon.png icon.png icon_full.png icon_maskable.png www/
-          cp -r css assets font lib lang content dist www/
+          for f in index.html manifest.webmanifest favicon.png icon.png icon_full.png icon_maskable.png css assets font lib lang content dist; do
+            if [ -e "$f" ]; then cp -r "$f" www/; else echo "skip (not found): $f"; fi
+          done
           rm -f www/dist/*.map
+          ls www
 
       # ---------- 3) Create the Android project ----------
       - run: npm install @capacitor/android@7 @capacitor/cli@7
